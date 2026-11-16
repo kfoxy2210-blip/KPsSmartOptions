@@ -1,0 +1,94 @@
+# KPsSmartOptions - GitHub Actions workflow: KP's Options ka APK banata hai (KPs_Options.apk)
+# Isse repo me is jagah rakho:  .github/workflows/kpssmartoptions.yml
+# Chalane ke liye: Actions tab -> "Build KPsSmartOptions" -> Run workflow (ye apne aap nahi chalta, sirf button se).
+name: Build KPsSmartOptions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # Release banane ke liye
+
+jobs:
+  build:
+    name: KPs_Options APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare source (zip kholna)
+        shell: bash
+        run: |
+          set -e
+          ZIP=$(ls -1 KPsSmartOptions*.zip 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -z "$ZIP" ]; then
+            echo "::error::Repo ke main folder me KPsSmartOptions_xxx.zip nahi mili. Zip ko bina khole upload karo."
+            ls -la
+            exit 1
+          fi
+          echo "Using zip: $ZIP"
+          mkdir -p _src
+          unzip -q -o "$ZIP" -d _src
+          APPDIR=$(find _src -maxdepth 3 -type d -name "KPs_Options" | head -n 1)
+          if [ -z "$APPDIR" ] || [ ! -f "$APPDIR/settings.gradle" ]; then
+            echo "::error::Zip ke andar KPs_Options folder (settings.gradle ke saath) nahi mila."
+            find _src -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "APPDIR=$APPDIR" >> "$GITHUB_ENV"
+          grep -n "versionCode\|versionName\|applicationId" "$APPDIR/app/build.gradle"
+
+      - name: Python 3.11 (Chaquopy build ke liye)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK licenses (SDK runner par pehle se installed hai)
+        shell: bash
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDK"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          echo "SDK: $SDK"; ls "$SDK" | head -20
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -e
+          cd "$APPDIR"
+          gradle assembleRelease --no-daemon --stacktrace
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then echo "::error::APK nahi bani"; exit 1; fi
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$APK" "$GITHUB_WORKSPACE/out/KPs_Options.apk"
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - name: Upload APK (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: KPs_Options
+          path: out/KPs_Options.apk
+          if-no-files-found: error
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: smartoptions-build-${{ github.run_number }}
+          name: KPsSmartOptions build ${{ github.run_number }}
+          body: |
+            KP's Options 1.2.0 (SMART AUTO + License key) - KPs_Options.apk
+            Naya alag app (App ID com.kp.options). Install karke Kite login se shuru karo, pehle DRY RUN.
+          files: out/KPs_Options.apk
